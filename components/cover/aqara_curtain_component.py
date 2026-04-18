@@ -3,7 +3,7 @@ import esphome.config_validation as cv
 from esphome.components import cover
 from esphome.const import CONF_ID
 
-from . import AqaraCurtainComponent, aqara_curtain_ns
+from ..aqara_curtain_component import AqaraCurtainComponent, aqara_curtain_ns
 
 DEPENDENCIES = ["aqara_curtain_component"]
 
@@ -25,3 +25,4 @@ async def to_code(config):
 
     parent = await cg.get_variable(config[CONF_AQARA_CURTAIN_ID])
     cg.add(parent.set_cover(var))
+

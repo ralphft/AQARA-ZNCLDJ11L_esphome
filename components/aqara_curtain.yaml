@@ -28,15 +28,17 @@ external_components:
   - source:
       type: local
       path: components   # folder that contains ZNCLDJ11L_component/
-    components: [ ZNCLDJ11L_component ]
+    components:
+      - aqara_curtain_component
+      - cover.aqara_curtain_component
 
 # ── Aqara curtain motor component ───────────────────────────────────────────
-aqara_curtain:
+aqara_curtain_component:
   id: curtain_motor
   uart_id: uart_bus
 
 cover:
-  - platform: aqara_curtain
+  - platform: aqara_curtain_component
     aqara_curtain_id: curtain_motor
     name: "Curtain"
     device_class: curtain
