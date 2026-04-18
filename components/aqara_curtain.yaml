@@ -31,12 +31,12 @@ external_components:
     components: [ ZNCLDJ11L_component ]
 
 # ── Aqara curtain motor component ───────────────────────────────────────────
-ZNCLDJ11L_component:
+aqara_curtain:
   id: curtain_motor
   uart_id: uart_bus
 
 cover:
-  - platform: ZNCLDJ11L_component
+  - platform: aqara_curtain
     aqara_curtain_id: curtain_motor
     name: "Curtain"
     device_class: curtain
