@@ -69,6 +69,26 @@ public:
         cover_->set_parent(this);
     }
 
+    void request_open() {
+        request_motion_(cover::COVER_OPERATION_OPENING, 100, false);
+    }
+
+    void request_close() {
+        request_motion_(cover::COVER_OPERATION_CLOSING, 0, false);
+    }
+
+    void request_stop() {
+        waiting_for_stop_ = false;
+        pending_use_position_ = false;
+        pending_operation_ = cover::COVER_OPERATION_IDLE;
+        cmd_pause();
+        set_operation_(cover::COVER_OPERATION_IDLE);
+    }
+
+    void request_position(uint8_t pct, cover::CoverOperation desired_operation) {
+        request_motion_(desired_operation, pct, true);
+    }
+
     // ── Component lifecycle ─────────────────────────────────────────────────
 
     void setup() override {
@@ -108,7 +128,6 @@ public:
         // Build: 0x55 0xFE 0xFE 0x03 0x04 <pct> <crcL> <crcH>
         uint8_t payload[6] = {0x55, 0xfe, 0xfe, 0x03, 0x04, pct};
         uint16_t crc = crc16_modbus(payload, 6);
-        uint8_t msg[3] = {pct, (uint8_t)(crc & 0xFF), (uint8_t)(crc >> 8)};
         // send as full frame
         write_array(PREAMBLE, 3);
         uint8_t hdr[2] = {0x03, 0x04};
@@ -129,6 +148,7 @@ public:
 
     bool is_calibrated() const { return calibrated_; }
     bool is_reversed()   const { return reversed_; }
+    bool is_position_aware() const { return aware_; }
 
 protected:
     AqaraCurtainCover *cover_{nullptr};
@@ -140,6 +160,10 @@ protected:
     bool     reversed_{false};
     bool     moving_{false};
     bool     aware_{false};       // motor knows its position
+    bool     waiting_for_stop_{false};
+    bool     pending_use_position_{false};
+    uint8_t  pending_position_{0};
+    cover::CoverOperation pending_operation_{cover::COVER_OPERATION_IDLE};
     uint32_t last_poll_{0};
 
     // ── Low-level send ──────────────────────────────────────────────────────
@@ -147,6 +171,60 @@ protected:
     void send_raw(const uint8_t *payload, int len) {
         write_array(PREAMBLE, 3);
         write_array(payload, len);
+    }
+
+    void set_operation_(cover::CoverOperation operation) {
+        moving_ = (operation != cover::COVER_OPERATION_IDLE);
+        if (cover_ != nullptr) cover_->current_operation = operation;
+    }
+
+    bool is_reversing_(cover::CoverOperation desired_operation) const {
+        if (!moving_ || cover_ == nullptr) return false;
+        return cover_->current_operation != cover::COVER_OPERATION_IDLE &&
+               cover_->current_operation != desired_operation;
+    }
+
+    void dispatch_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
+        waiting_for_stop_ = false;
+        pending_use_position_ = false;
+        pending_operation_ = cover::COVER_OPERATION_IDLE;
+
+        if (use_position) {
+            cmd_set_position(pct);
+        } else if (operation == cover::COVER_OPERATION_OPENING) {
+            cmd_open();
+        } else if (operation == cover::COVER_OPERATION_CLOSING) {
+            cmd_close();
+        }
+
+        set_operation_(operation);
+    }
+
+    void request_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
+        if (is_reversing_(operation)) {
+            waiting_for_stop_ = true;
+            pending_use_position_ = use_position;
+            pending_position_ = pct;
+            pending_operation_ = operation;
+            cmd_pause();
+            return;
+        }
+
+        dispatch_motion_(operation, pct, use_position);
+    }
+
+    void maybe_dispatch_pending_() {
+        if (!waiting_for_stop_ || moving_) return;
+
+        const auto pending_operation = pending_operation_;
+        const auto pending_position = pending_position_;
+        const bool pending_use_position = pending_use_position_;
+
+        waiting_for_stop_ = false;
+        pending_use_position_ = false;
+        pending_operation_ = cover::COVER_OPERATION_IDLE;
+
+        dispatch_motion_(pending_operation, pending_position, pending_use_position);
     }
 
     // ── Buffer processing ───────────────────────────────────────────────────
@@ -238,9 +316,13 @@ protected:
             reversed_   = dir;
 
             // sta: 0=stopped 1=opening 2=closing -> cover state
-            moving_ = (sta != 0);
+            auto operation = cover::COVER_OPERATION_IDLE;
+            if (sta == 1) operation = cover::COVER_OPERATION_OPENING;
+            else if (sta == 2) operation = cover::COVER_OPERATION_CLOSING;
+            set_operation_(operation);
 
             update_position_(pos);
+            maybe_dispatch_pending_();
             return;
         }
 
@@ -252,8 +334,6 @@ protected:
                 if (val == 0xff) {
                     aware_ = false;
                     if (cover_) {
-                        cover_->current_operation = cover::COVER_OPERATION_IDLE;
-                        cover_->position = cover::COVER_OPEN; // unknown
                         cover_->publish_state();
                     }
                 } else {
@@ -269,11 +349,15 @@ protected:
             }
 
             if (sub == 0x05) { // status (0=stopped 1=opening 2=closing)
-                moving_ = (val != 0);
-                if (!moving_ && cover_) {
-                    cover_->current_operation = cover::COVER_OPERATION_IDLE;
+                auto operation = cover::COVER_OPERATION_IDLE;
+                if (val == 1) operation = cover::COVER_OPERATION_OPENING;
+                else if (val == 2) operation = cover::COVER_OPERATION_CLOSING;
+
+                set_operation_(operation);
+                if (cover_) {
                     cover_->publish_state();
                 }
+                maybe_dispatch_pending_();
             }
 
             if (sub == 0x09) { // calibration
@@ -284,14 +368,10 @@ protected:
 
     void update_position_(uint8_t pct) {
         if (!cover_) return;
+        if (pct < 3) pct = 0;
+        if (pct > 97) pct = 100;
         // ESPHome: 0.0 = CLOSED, 1.0 = OPEN; motor: 0 = closed, 100 = open
         cover_->position = pct / 100.0f;
-        if (moving_) {
-            // Determine direction from last commanded position vs current
-            cover_->current_operation = cover::COVER_OPERATION_IDLE; // updated by status
-        } else {
-            cover_->current_operation = cover::COVER_OPERATION_IDLE;
-        }
         cover_->publish_state();
     }
 };
@@ -302,7 +382,7 @@ inline void AqaraCurtainCover::control(const cover::CoverCall &call) {
     if (!parent_) return;
 
     if (call.get_stop()) {
-        parent_->cmd_pause();
+        parent_->request_stop();
         current_operation = cover::COVER_OPERATION_IDLE;
         publish_state();
         return;
@@ -310,21 +390,38 @@ inline void AqaraCurtainCover::control(const cover::CoverCall &call) {
 
     if (call.get_position().has_value()) {
         float pos = *call.get_position();
-        uint8_t pct = (uint8_t)(pos * 100.0f);
+        if (pos < 0.0f) pos = 0.0f;
+        if (pos > 1.0f) pos = 1.0f;
 
-        if (parent_->is_calibrated()) {
-            parent_->cmd_set_position(pct);
-            current_operation = (pos > position) ? cover::COVER_OPERATION_OPENING
-                                                  : cover::COVER_OPERATION_CLOSING;
+        uint8_t pct = static_cast<uint8_t>(pos * 100.0f + 0.5f);
+
+        if (pct >= 100) {
+            parent_->request_open();
+            current_operation = cover::COVER_OPERATION_OPENING;
+        } else if (pct == 0) {
+            parent_->request_close();
+            current_operation = cover::COVER_OPERATION_CLOSING;
         } else {
-            if (pos > position) {
-                parent_->cmd_open();
-                current_operation = cover::COVER_OPERATION_OPENING;
+            auto desired_operation = cover::COVER_OPERATION_OPENING;
+            if (parent_->is_position_aware()) {
+                desired_operation = (pos > position) ? cover::COVER_OPERATION_OPENING
+                                                     : cover::COVER_OPERATION_CLOSING;
             } else {
-                parent_->cmd_close();
-                current_operation = cover::COVER_OPERATION_CLOSING;
+                desired_operation = (pos >= 0.5f) ? cover::COVER_OPERATION_OPENING
+                                                  : cover::COVER_OPERATION_CLOSING;
             }
+
+            if (parent_->is_calibrated()) {
+                parent_->request_position(pct, desired_operation);
+            } else if (desired_operation == cover::COVER_OPERATION_OPENING) {
+                parent_->request_open();
+            } else {
+                parent_->request_close();
+            }
+
+            current_operation = desired_operation;
         }
+
         publish_state();
     }
 }
