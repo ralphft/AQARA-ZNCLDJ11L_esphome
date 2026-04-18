@@ -78,11 +78,22 @@ public:
     }
 
     void request_stop() {
+        // Cancel any queued reversal.
         waiting_for_stop_ = false;
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
+
         cmd_pause();
-        set_operation_(cover::COVER_OPERATION_IDLE);
+
+        // Update the UI immediately so HA shows IDLE, but do NOT set moving_ = false
+        // here.  The motor may still be decelerating, and a premature moving_ = false
+        // would cause is_reversing_() to skip the pause-and-wait path on the very next
+        // direction command, sending it to a still-moving motor (which ignores it).
+        // The motor's own status response will clear moving_ once it has truly stopped.
+        if (cover_ != nullptr) {
+            cover_->current_operation = cover::COVER_OPERATION_IDLE;
+            cover_->publish_state();
+        }
     }
 
     void request_position(uint8_t pct, cover::CoverOperation desired_operation) {
@@ -224,7 +235,10 @@ protected:
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
 
-        dispatch_motion_(pending_operation, pending_position, pending_use_position);
+        // Only dispatch if a real motion was queued (not a plain stop).
+        if (pending_operation != cover::COVER_OPERATION_IDLE) {
+            dispatch_motion_(pending_operation, pending_position, pending_use_position);
+        }
     }
 
     // ── Buffer processing ───────────────────────────────────────────────────
@@ -382,9 +396,7 @@ inline void AqaraCurtainCover::control(const cover::CoverCall &call) {
     if (!parent_) return;
 
     if (call.get_stop()) {
-        parent_->request_stop();
-        current_operation = cover::COVER_OPERATION_IDLE;
-        publish_state();
+        parent_->request_stop();  // updates UI and sends pause
         return;
     }
 
@@ -402,6 +414,9 @@ inline void AqaraCurtainCover::control(const cover::CoverCall &call) {
             parent_->request_close();
             current_operation = cover::COVER_OPERATION_CLOSING;
         } else {
+            // Always derive direction from the current position.
+            // Falling back to a 50% threshold was wrong: e.g. setting 30% on a
+            // closed (0%) curtain would be treated as "close" and do nothing.
             auto desired_operation = (pos >= position) ? cover::COVER_OPERATION_OPENING
                                                        : cover::COVER_OPERATION_CLOSING;
 
