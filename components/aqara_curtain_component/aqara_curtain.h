@@ -402,14 +402,8 @@ inline void AqaraCurtainCover::control(const cover::CoverCall &call) {
             parent_->request_close();
             current_operation = cover::COVER_OPERATION_CLOSING;
         } else {
-            auto desired_operation = cover::COVER_OPERATION_OPENING;
-            if (parent_->is_position_aware()) {
-                desired_operation = (pos > position) ? cover::COVER_OPERATION_OPENING
-                                                     : cover::COVER_OPERATION_CLOSING;
-            } else {
-                desired_operation = (pos >= 0.5f) ? cover::COVER_OPERATION_OPENING
-                                                  : cover::COVER_OPERATION_CLOSING;
-            }
+            auto desired_operation = (pos >= position) ? cover::COVER_OPERATION_OPENING
+                                                       : cover::COVER_OPERATION_CLOSING;
 
             if (parent_->is_calibrated()) {
                 parent_->request_position(pct, desired_operation);
