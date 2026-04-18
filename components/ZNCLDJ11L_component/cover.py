@@ -6,7 +6,7 @@ from esphome.const import CONF_ID
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["cover"]
 
-CODEOWNERS = ["@HomeAccessoryKid"]
+CODEOWNERS = ["@ralpht"]
 
 aqara_curtain_ns = cg.esphome_ns.namespace("aqara_curtain")
 AqaraCurtainComponent = aqara_curtain_ns.class_(
