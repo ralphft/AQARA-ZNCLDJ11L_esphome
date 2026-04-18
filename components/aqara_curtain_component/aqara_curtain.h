@@ -79,19 +79,11 @@ public:
 
     void request_stop() {
         // Cancel any queued reversal.
-        waiting_for_stop_ = false;
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
 
         cmd_pause();
 
-        // Update the UI immediately so HA shows IDLE, but do NOT set moving_ = false
-        // here.  The motor may still be decelerating, and a premature moving_ = false
-        // would cause is_reversing_() to skip the pause-and-wait path on the very next
-        // direction command, sending it to a still-moving motor (which ignores it).
-        // decelerating_after_stop_ signals this; it is cleared by set_operation_() once
-        // the motor confirms it has truly stopped.
-        decelerating_after_stop_ = true;
         if (cover_ != nullptr) {
             cover_->current_operation = cover::COVER_OPERATION_IDLE;
             cover_->publish_state();
@@ -122,7 +114,7 @@ public:
 
         // Periodic poll (~1 Hz when idle, faster when moving)
         uint32_t now = millis();
-        uint32_t interval = (moving_) ? 200 : 1000;
+        uint32_t interval = 1000;
         if (now - last_poll_ >= interval) {
             last_poll_ = now;
             send_raw(MSG_REQPOS, sizeof(MSG_REQPOS));
@@ -133,8 +125,8 @@ public:
 
     // ── Public command API ──────────────────────────────────────────────────
 
-    void cmd_open()  { send_raw(MSG_OPEN,  sizeof(MSG_OPEN));  moving_ = true; }
-    void cmd_close() { send_raw(MSG_CLOSE, sizeof(MSG_CLOSE)); moving_ = true; }
+    void cmd_open()  { send_raw(MSG_OPEN,  sizeof(MSG_OPEN)); }
+    void cmd_close() { send_raw(MSG_CLOSE, sizeof(MSG_CLOSE)); }
     void cmd_pause() { send_raw(MSG_PAUSE, sizeof(MSG_PAUSE)); }
 
     void cmd_set_position(uint8_t pct) {
@@ -148,7 +140,6 @@ public:
         write_byte(pct);
         write_byte((uint8_t)(crc & 0xFF));
         write_byte((uint8_t)(crc >> 8));
-        moving_ = true;
     }
 
     void cmd_uncalibrate() { send_raw(MSG_UNCAL, sizeof(MSG_UNCAL)); calibrated_ = false; }
@@ -171,10 +162,7 @@ protected:
 
     bool     calibrated_{false};
     bool     reversed_{false};
-    bool     moving_{false};
     bool     aware_{false};            // motor knows its position
-    bool     waiting_for_stop_{false};
-    bool     decelerating_after_stop_{false}; // stop was requested; wait for motor to confirm
     bool     pending_use_position_{false};
     uint8_t  pending_position_{0};
     cover::CoverOperation pending_operation_{cover::COVER_OPERATION_IDLE};
@@ -188,24 +176,10 @@ protected:
     }
 
     void set_operation_(cover::CoverOperation operation) {
-        moving_ = (operation != cover::COVER_OPERATION_IDLE);
-        if (!moving_) decelerating_after_stop_ = false; // motor has confirmed stopped
         if (cover_ != nullptr) cover_->current_operation = operation;
     }
 
-    bool is_reversing_(cover::CoverOperation desired_operation) const {
-        if (!moving_ || cover_ == nullptr) return false;
-        // Two cases require waiting for a confirmed stop before sending a new command:
-        // 1. Truly reversing: motor is actively moving in the opposite direction.
-        // 2. Decelerating after an explicit stop request: the motor may still be
-        //    coasting; sending a command now would be silently ignored.
-        if (decelerating_after_stop_) return true;
-        return cover_->current_operation != desired_operation;
-    }
-
     void dispatch_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
-        waiting_for_stop_ = false;
-        decelerating_after_stop_ = false;
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
 
@@ -221,26 +195,14 @@ protected:
     }
 
     void request_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
-        if (is_reversing_(operation)) {
-            waiting_for_stop_ = true;
-            pending_use_position_ = use_position;
-            pending_position_ = pct;
-            pending_operation_ = operation;
-            cmd_pause();
-            return;
-        }
-
         dispatch_motion_(operation, pct, use_position);
     }
 
     void maybe_dispatch_pending_() {
-        if (!waiting_for_stop_ || moving_) return;
-
         const auto pending_operation = pending_operation_;
         const auto pending_position = pending_position_;
         const bool pending_use_position = pending_use_position_;
 
-        waiting_for_stop_ = false;
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
 
