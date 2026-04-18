@@ -4,7 +4,7 @@ from esphome.components import cover
 from esphome.const import CONF_ID
 from . import AqaraCurtainComponent, aqara_curtain_ns
 
-DEPENDENCIES = ["aqara_curtain"]
+DEPENDENCIES = ["aqara_curtain_component"]
 
 AqaraCurtainCover = aqara_curtain_ns.class_("AqaraCurtainCover", cover.Cover)
 
