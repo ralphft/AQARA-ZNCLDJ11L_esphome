@@ -89,7 +89,9 @@ public:
         // here.  The motor may still be decelerating, and a premature moving_ = false
         // would cause is_reversing_() to skip the pause-and-wait path on the very next
         // direction command, sending it to a still-moving motor (which ignores it).
-        // The motor's own status response will clear moving_ once it has truly stopped.
+        // decelerating_after_stop_ signals this; it is cleared by set_operation_() once
+        // the motor confirms it has truly stopped.
+        decelerating_after_stop_ = true;
         if (cover_ != nullptr) {
             cover_->current_operation = cover::COVER_OPERATION_IDLE;
             cover_->publish_state();
@@ -170,8 +172,9 @@ protected:
     bool     calibrated_{false};
     bool     reversed_{false};
     bool     moving_{false};
-    bool     aware_{false};       // motor knows its position
+    bool     aware_{false};            // motor knows its position
     bool     waiting_for_stop_{false};
+    bool     decelerating_after_stop_{false}; // stop was requested; wait for motor to confirm
     bool     pending_use_position_{false};
     uint8_t  pending_position_{0};
     cover::CoverOperation pending_operation_{cover::COVER_OPERATION_IDLE};
@@ -186,22 +189,23 @@ protected:
 
     void set_operation_(cover::CoverOperation operation) {
         moving_ = (operation != cover::COVER_OPERATION_IDLE);
+        if (!moving_) decelerating_after_stop_ = false; // motor has confirmed stopped
         if (cover_ != nullptr) cover_->current_operation = operation;
     }
 
     bool is_reversing_(cover::CoverOperation desired_operation) const {
         if (!moving_ || cover_ == nullptr) return false;
-        // Two cases where we must wait for the motor to confirm stopped first:
-        // 1. Truly reversing: motor is moving the other way.
-        // 2. Decelerating after stop: moving_ is still true but current_operation was
-        //    already cleared to IDLE by request_stop(). Sending any command now would
-        //    be silently ignored by the motor.
-        if (cover_->current_operation == cover::COVER_OPERATION_IDLE) return true;
+        // Two cases require waiting for a confirmed stop before sending a new command:
+        // 1. Truly reversing: motor is actively moving in the opposite direction.
+        // 2. Decelerating after an explicit stop request: the motor may still be
+        //    coasting; sending a command now would be silently ignored.
+        if (decelerating_after_stop_) return true;
         return cover_->current_operation != desired_operation;
     }
 
     void dispatch_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
         waiting_for_stop_ = false;
+        decelerating_after_stop_ = false;
         pending_use_position_ = false;
         pending_operation_ = cover::COVER_OPERATION_IDLE;
 
