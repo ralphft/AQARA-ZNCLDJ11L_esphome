@@ -191,8 +191,13 @@ protected:
 
     bool is_reversing_(cover::CoverOperation desired_operation) const {
         if (!moving_ || cover_ == nullptr) return false;
-        return cover_->current_operation != cover::COVER_OPERATION_IDLE &&
-               cover_->current_operation != desired_operation;
+        // Two cases where we must wait for the motor to confirm stopped first:
+        // 1. Truly reversing: motor is moving the other way.
+        // 2. Decelerating after stop: moving_ is still true but current_operation was
+        //    already cleared to IDLE by request_stop(). Sending any command now would
+        //    be silently ignored by the motor.
+        if (cover_->current_operation == cover::COVER_OPERATION_IDLE) return true;
+        return cover_->current_operation != desired_operation;
     }
 
     void dispatch_motion_(cover::CoverOperation operation, uint8_t pct, bool use_position) {
